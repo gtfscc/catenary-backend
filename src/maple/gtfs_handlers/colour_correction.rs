@@ -1,19 +1,50 @@
 use rgb::RGB;
 
 pub const WHITE_RGB: RGB<u8> = RGB::new(255, 255, 255);
-
+pub const BLACK_RGB: RGB<u8> = RGB::new(0, 0, 0);
 pub const DEFAULT_BACKGROUND: RGB<u8> = RGB::new(14, 165, 233);
 
-pub fn fix_background_colour_rgb(background: Option<RGB<u8>>) -> RGB<u8> {
-    if background.is_none()
-        || background == Some(RGB::new(255, 255, 255))
-        || background == Some(RGB::new(0, 0, 0))
-    {
-        DEFAULT_BACKGROUND
-    } else {
-        background.unwrap_or_else(|| DEFAULT_BACKGROUND)
-    }
+//start helper functions for luminance/contrast stuff
+
+fn get_luminance(color: RGB<u8>) -> f64 {
+    let f = |c: u8| {
+        let s = c as f64 / 255.0;
+        if s <= 0.03928 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * f(color.r) + 0.7152 * f(color.g) + 0.0722 * f(color.b)
 }
+
+fn get_contrast(a: RGB<u8>, b: RGB<u8>) -> f64 {
+    let l1 = get_luminance(a);
+    let l2 = get_luminance(b);
+    if l1 > l2 { (l1 + 0.05) / (l2 + 0.05) } else { (l2 + 0.05) / (l1 + 0.05) }
+}
+
+fn is_piss_colored(color: RGB<u8>) -> bool {
+    let r = color.r as f32 / 255.0;
+    let g = color.g as f32 / 255.0;
+    let b = color.b as f32 / 255.0;
+    
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let delta = max - min;
+
+    if delta < 0.001 { return false; }
+
+    let mut hue = if max == r {
+        ((g - b) / delta) % 6.0
+    } else if max == g {
+        ((b - r) / delta) + 2.0
+    } else {
+        ((r - g) / delta) + 4.0
+    } * 60.0;
+
+    if hue < 0.0 { hue += 360.0; }
+
+    (44.67..=69.69).contains(&hue)
+}
+
+//end helper functions for luminance/contrast stuff
 
 pub fn fix_background_colour_rgb_feed_route(
     feed_id: &str,
@@ -251,14 +282,52 @@ pub fn fix_background_colour_rgb_feed_route(
     }
 }
 
+
 pub fn fix_foreground_colour_rgb(
     background: Option<RGB<u8>>,
     foreground: Option<RGB<u8>>,
 ) -> RGB<u8> {
-    if background == foreground {
-        RGB::new(0, 0, 0)
+    let bg = fix_background_colour_rgb(background);
+    
+    if foreground.is_none() || foreground == Some(BLACK_RGB) || foreground == Some(WHITE_RGB) {
+        let is_yellow_green = is_piss_colored(bg);
+        
+        if foreground.is_none() {
+            let white_contrast = get_contrast(bg, WHITE_RGB);
+            let black_contrast = get_contrast(bg, BLACK_RGB);
+            return if white_contrast >= black_contrast { WHITE_RGB } else { BLACK_RGB };
+        }
+
+        let current_fg = foreground.unwrap();
+        let current_contrast = get_contrast(bg, current_fg);
+
+        if current_fg == WHITE_RGB {
+            //white text
+            let threshold = if is_yellow_green { 1.4 } else { 1.3 };
+            if current_contrast < threshold {
+                let alt_contrast = get_contrast(bg, BLACK_RGB);
+                if alt_contrast > current_contrast { return BLACK_RGB; }
+            }
+        } else if current_fg == BLACK_RGB {
+            //black text
+            let threshold = if is_yellow_green { 4.0 } else { 3.0 };
+            if current_contrast < threshold {
+                let alt_contrast = get_contrast(bg, WHITE_RGB);
+                if alt_contrast > current_contrast { return WHITE_RGB; }
+            }
+        }
+        
+        return current_fg;
+    }
+
+    //fallback
+    let fg = foreground.unwrap_or(BLACK_RGB);
+    if bg == fg {
+        let white_contrast = get_contrast(bg, WHITE_RGB);
+        let black_contrast = get_contrast(bg, BLACK_RGB);
+        if white_contrast >= black_contrast { WHITE_RGB } else { BLACK_RGB }
     } else {
-        foreground.unwrap_or_else(|| RGB::new(0, 0, 0))
+        fg
     }
 }
 
